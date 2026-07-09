@@ -1,0 +1,34 @@
+[package]
+name = "protohub"
+version = "0.1.0"
+description = "A protobuf editor and gRPC testing desktop app."
+authors = ["ProtoHub"]
+edition = "2021"
+
+[lib]
+name = "protohub_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.4.1", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+bytes = "1.8"
+http = "1.1"
+http-body-util = "0.1"
+prost = "0.13"
+prost-reflect = { version = "0.14", features = ["serde"] }
+prost-types = "0.13"
+protox = "0.9.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.8.5", features = [] }
+tauri-plugin-dialog = "2.4.0"
+tauri-plugin-fs = "2.4.2"
+tokio = { version = "1.41", features = ["macros", "rt-multi-thread"] }
+tonic = { version = "0.12", features = ["transport"] }
+tower-service = "0.3"
+tempfile = "3.14"
+walkdir = "2.5"
