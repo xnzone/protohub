@@ -1,6 +1,6 @@
 [package]
 name = "protohub"
-version = "0.1.2"
+version = "0.1.3"
 description = "A protobuf editor and gRPC testing desktop app."
 authors = ["ProtoHub"]
 edition = "2021"
