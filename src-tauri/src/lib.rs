@@ -11,16 +11,16 @@ use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     str::FromStr,
 };
 use tauri::Manager;
 use tonic::{
     client::Grpc,
     codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
-    Code,
     metadata::{Ascii, MetadataKey, MetadataValue},
     transport::Endpoint,
-    Request,
+    Code, Request,
 };
 
 #[derive(Debug, Serialize)]
@@ -142,6 +142,30 @@ struct FieldInfo {
     children: Vec<FieldInfo>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitWorkspaceInfo {
+    repository_root: String,
+    remote_url: String,
+    current_branch: String,
+    available_branches: Vec<String>,
+    default_branch: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitPullOutput {
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitChange {
+    path: String,
+    relative_path: String,
+    status: String,
+}
+
 #[tauri::command]
 fn read_workspace(root: String) -> Result<FileNode, String> {
     build_file_tree(Path::new(&root)).map_err(to_string)
@@ -155,6 +179,142 @@ fn read_text_file(path: String) -> Result<String, String> {
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> Result<(), String> {
     fs::write(path, content).map_err(to_string)
+}
+
+#[tauri::command]
+fn get_git_workspace_info(root: String) -> Result<Option<GitWorkspaceInfo>, String> {
+    let root_path = Path::new(&root);
+    let repository_root = match git_output(root_path, &["rev-parse", "--show-toplevel"]) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let repository_path = PathBuf::from(&repository_root);
+    let remote_url = match git_output(&repository_path, &["remote", "get-url", "origin"]) {
+        Ok(value) if !value.is_empty() => value,
+        _ => return Ok(None),
+    };
+    let current_branch =
+        git_output(&repository_path, &["branch", "--show-current"]).unwrap_or_default();
+    let mut available_branches = Vec::new();
+    for branch in ["main", "master"] {
+        if git_command_succeeds(
+            &repository_path,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/origin/{branch}"),
+            ],
+        ) {
+            available_branches.push(branch.to_string());
+        }
+    }
+    if available_branches.is_empty() {
+        return Ok(None);
+    }
+    let default_branch = if available_branches
+        .iter()
+        .any(|item| item == &current_branch)
+    {
+        current_branch.clone()
+    } else {
+        available_branches[0].clone()
+    };
+
+    Ok(Some(GitWorkspaceInfo {
+        repository_root,
+        remote_url,
+        current_branch,
+        available_branches,
+        default_branch,
+    }))
+}
+
+#[tauri::command]
+fn pull_git_branch(root: String, branch: String) -> Result<GitPullOutput, String> {
+    if branch != "main" && branch != "master" {
+        return Err("Only main or master can be auto-pulled".to_string());
+    }
+    let repository_root = git_output(Path::new(&root), &["rev-parse", "--show-toplevel"])?;
+    let repository_path = PathBuf::from(repository_root);
+    git_output(&repository_path, &["remote", "get-url", "origin"])?;
+    let current_branch =
+        git_output(&repository_path, &["branch", "--show-current"]).unwrap_or_default();
+    let output = if current_branch == branch {
+        git_output(&repository_path, &["pull", "--ff-only", "origin", &branch])?
+    } else {
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        git_output(&repository_path, &["fetch", "origin", &refspec])?
+    };
+    Ok(GitPullOutput {
+        message: if output.is_empty() {
+            format!("{branch} is up to date")
+        } else {
+            output
+        },
+    })
+}
+
+#[tauri::command]
+fn get_git_changes(root: String) -> Result<Vec<GitChange>, String> {
+    let repository_root = git_output(Path::new(&root), &["rev-parse", "--show-toplevel"])?;
+    let repository_path = PathBuf::from(repository_root);
+    let output = git_output(
+        &repository_path,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 4 {
+                return None;
+            }
+            let status = line[..2].trim().to_string();
+            let display_path = line[3..]
+                .rsplit_once(" -> ")
+                .map(|(_, destination)| destination)
+                .unwrap_or(&line[3..])
+                .trim_matches('"')
+                .to_string();
+            Some(GitChange {
+                path: repository_path
+                    .join(&display_path)
+                    .to_string_lossy()
+                    .to_string(),
+                relative_path: display_path,
+                status,
+            })
+        })
+        .collect())
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("Unable to run git: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if message.is_empty() {
+            "Git command failed".to_string()
+        } else {
+            message
+        })
+    }
+}
+
+fn git_command_succeeds(root: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -225,7 +385,9 @@ async fn invoke_grpc_inner(input: GrpcRequestInput) -> anyhow::Result<GrpcRespon
         .ok_or_else(|| anyhow!("method not found: {}", input.method))?;
 
     if method.is_client_streaming() || method.is_server_streaming() {
-        return Err(anyhow!("streaming RPC is recognized but not supported in this MVP"));
+        return Err(anyhow!(
+            "streaming RPC is recognized but not supported in this MVP"
+        ));
     }
 
     let request_descriptor = method.input();
@@ -427,16 +589,12 @@ fn field_template_json(field: &FieldDescriptor, depth: usize) -> Value {
 fn single_field_template_json(field: &FieldDescriptor, depth: usize) -> Value {
     match field.kind() {
         Kind::Double | Kind::Float => Value::from(0.0),
-        Kind::Int32
-        | Kind::Sint32
-        | Kind::Sfixed32
-        | Kind::Uint32
-        | Kind::Fixed32 => Value::from(0),
-        Kind::Int64
-        | Kind::Sint64
-        | Kind::Sfixed64
-        | Kind::Uint64
-        | Kind::Fixed64 => Value::from("0"),
+        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 | Kind::Uint32 | Kind::Fixed32 => {
+            Value::from(0)
+        }
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 | Kind::Uint64 | Kind::Fixed64 => {
+            Value::from("0")
+        }
         Kind::Bool => Value::from(false),
         Kind::String => Value::from(""),
         Kind::Bytes => Value::from(""),
@@ -780,8 +938,9 @@ fn method_from_descriptor(method: &MethodDescriptor) -> ProtoMethodInfo {
 }
 
 fn find_service_by_suffix(pool: &DescriptorPool, service_name: &str) -> Option<ServiceDescriptor> {
-    pool.services()
-        .find(|service| service.name() == service_name || service.full_name().ends_with(service_name))
+    pool.services().find(|service| {
+        service.name() == service_name || service.full_name().ends_with(service_name)
+    })
 }
 
 #[derive(Clone)]
@@ -854,6 +1013,9 @@ pub fn run() {
             read_workspace,
             read_text_file,
             write_text_file,
+            get_git_workspace_info,
+            pull_git_branch,
+            get_git_changes,
             analyze_proto,
             get_method_template,
             invoke_grpc
@@ -922,7 +1084,10 @@ message SubmitVoiceMessageRsp {
         );
         assert_eq!(template.request_json["user_id"], Value::from(""));
         assert_eq!(template.request_json["track_ids"], serde_json::json!(["0"]));
-        assert_eq!(template.request_json["payload"]["urgent"], Value::from(false));
+        assert_eq!(
+            template.request_json["payload"]["urgent"],
+            Value::from(false)
+        );
         assert_eq!(template.request_fields.len(), 3);
     }
 

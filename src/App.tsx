@@ -10,6 +10,7 @@ import {
   CircleDot,
   FileCode2,
   FolderOpen,
+  GitBranch,
   Hash,
   List,
   MessageSquare,
@@ -89,6 +90,62 @@ type DefinitionLocation = {
   path: string;
   line: number;
 };
+
+type GitWorkspaceInfo = {
+  repositoryRoot: string;
+  remoteUrl: string;
+  currentBranch: string;
+  availableBranches: string[];
+  defaultBranch: string;
+};
+
+type GitPullConfig = {
+  branch: string;
+  intervalMinutes: number;
+};
+
+type GitChange = {
+  path: string;
+  relativePath: string;
+  status: string;
+};
+
+const GIT_PULL_STORAGE_KEY = "protohub.gitPullConfigs";
+
+function loadGitPullConfig(
+  root: string,
+  availableBranches: string[],
+  fallbackBranch: string,
+): GitPullConfig {
+  try {
+    const configs = JSON.parse(localStorage.getItem(GIT_PULL_STORAGE_KEY) || "{}") as Record<
+      string,
+      GitPullConfig
+    >;
+    const saved = configs[root];
+    if (
+      saved &&
+      availableBranches.includes(saved.branch) &&
+      [0, 1, 5, 15, 30, 60].includes(saved.intervalMinutes)
+    ) return saved;
+  } catch {
+    // Use the repository defaults when storage is unavailable or invalid.
+  }
+  return { branch: fallbackBranch, intervalMinutes: 0 };
+}
+
+function saveGitPullConfig(root: string, config: GitPullConfig): void {
+  try {
+    const configs = JSON.parse(localStorage.getItem(GIT_PULL_STORAGE_KEY) || "{}") as Record<
+      string,
+      GitPullConfig
+    >;
+    configs[root] = config;
+    localStorage.setItem(GIT_PULL_STORAGE_KEY, JSON.stringify(configs));
+  } catch {
+    // The current session can still use the selected configuration.
+  }
+}
 
 const emptyAnalysis: ProtoAnalysis = {
   packageName: "",
@@ -192,6 +249,12 @@ export default function App() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [status, setStatus] = useState("Ready");
+  const [gitInfo, setGitInfo] = useState<GitWorkspaceInfo | null>(null);
+  const [gitConfig, setGitConfig] = useState<GitPullConfig>({ branch: "main", intervalMinutes: 0 });
+  const [gitPanelOpen, setGitPanelOpen] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
+  const [gitChanges, setGitChanges] = useState<GitChange[]>([]);
+  const isPullingRef = useRef(false);
   const [activeLine, setActiveLine] = useState<number | null>(null);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const analysisRef = useRef<ProtoAnalysis>(emptyAnalysis);
@@ -268,6 +331,36 @@ export default function App() {
   }, [includePaths]);
 
   useEffect(() => {
+    if (!rootPath) {
+      setGitInfo(null);
+      return;
+    }
+    void invoke<GitWorkspaceInfo | null>("get_git_workspace_info", { root: rootPath })
+      .then((info) => {
+        setGitInfo(info);
+        if (info) {
+          setGitConfig(
+            loadGitPullConfig(info.repositoryRoot, info.availableBranches, info.defaultBranch),
+          );
+          void loadGitChanges(info.repositoryRoot);
+        } else {
+          setGitPanelOpen(false);
+          setGitChanges([]);
+        }
+      })
+      .catch(() => setGitInfo(null));
+  }, [rootPath]);
+
+  useEffect(() => {
+    if (!gitInfo || gitConfig.intervalMinutes <= 0) return;
+    const timer = window.setInterval(
+      () => void pullFromRemote(true),
+      gitConfig.intervalMinutes * 60_000,
+    );
+    return () => window.clearInterval(timer);
+  }, [gitInfo?.repositoryRoot, gitConfig.branch, gitConfig.intervalMinutes, activeFile, isDirty]);
+
+  useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
@@ -296,7 +389,48 @@ export default function App() {
     if (!rootPath) return;
     const nextTree = await invoke<FileNode>("read_workspace", { root: rootPath });
     setTree(nextTree);
+    if (gitInfo) await loadGitChanges(gitInfo.repositoryRoot);
     setStatus("Workspace refreshed");
+  }
+
+  async function loadGitChanges(repositoryRoot: string) {
+    try {
+      setGitChanges(await invoke<GitChange[]>("get_git_changes", { root: repositoryRoot }));
+    } catch {
+      setGitChanges([]);
+    }
+  }
+
+  function updateGitConfig(next: GitPullConfig) {
+    setGitConfig(next);
+    if (gitInfo) saveGitPullConfig(gitInfo.repositoryRoot, next);
+  }
+
+  async function pullFromRemote(automatic = false) {
+    if (!gitInfo || isPullingRef.current) return;
+    isPullingRef.current = true;
+    setIsPulling(true);
+    setStatus(`${automatic ? "Auto-pulling" : "Pulling"} origin/${gitConfig.branch}`);
+    try {
+      const result = await invoke<{ message: string }>("pull_git_branch", {
+        root: gitInfo.repositoryRoot,
+        branch: gitConfig.branch,
+      });
+      const nextTree = await invoke<FileNode>("read_workspace", { root: rootPath });
+      setTree(nextTree);
+      await loadGitChanges(gitInfo.repositoryRoot);
+      if (activeFile && !isDirty) {
+        const nextContent = await invoke<string>("read_text_file", { path: activeFile });
+        setContent(nextContent);
+        setSavedContent(nextContent);
+      }
+      setStatus(`origin/${gitConfig.branch}: ${result.message}`);
+    } catch (error) {
+      setStatus(`Git pull failed: ${String(error)}`);
+    } finally {
+      isPullingRef.current = false;
+      setIsPulling(false);
+    }
   }
 
   async function openFile(path: string) {
@@ -311,6 +445,7 @@ export default function App() {
     if (!activeFile) return;
     await invoke("write_text_file", { path: activeFile, content });
     setSavedContent(content);
+    if (gitInfo) await loadGitChanges(gitInfo.repositoryRoot);
     setStatus(`Saved ${fileName(activeFile)}`);
   }
 
@@ -580,12 +715,103 @@ export default function App() {
           <button className="icon-button" onClick={refreshWorkspace} title="Refresh workspace">
             <RefreshCcw size={16} />
           </button>
+          {gitInfo && (
+            <button
+              className={`icon-button ${gitPanelOpen ? "active" : ""}`}
+              onClick={() => setGitPanelOpen((value) => !value)}
+              title="Git auto-pull settings"
+            >
+              <GitBranch size={16} />
+              {gitChanges.length > 0 && <span className="git-change-count">{gitChanges.length}</span>}
+            </button>
+          )}
         </div>
 
         <div className="search-box">
           <Search size={15} />
           <span>{rootPath ? fileName(rootPath) : "No workspace"}</span>
         </div>
+
+        {gitInfo && gitPanelOpen && (
+          <section className="git-settings">
+            <div className="git-settings-title">
+              <GitBranch size={14} />
+              <span>Auto-pull</span>
+            </div>
+            <div className="git-remote" title={gitInfo.remoteUrl}>
+              {gitInfo.remoteUrl}
+            </div>
+            <div className="git-changes-header">
+              <span>Changes</span>
+              <button
+                className="git-refresh-button"
+                onClick={() => void loadGitChanges(gitInfo.repositoryRoot)}
+                title="Refresh changes"
+              >
+                <RefreshCcw size={12} />
+              </button>
+            </div>
+            <div className="git-changes">
+              {gitChanges.length ? (
+                gitChanges.map((change) => {
+                  const canOpen = !change.status.includes("D") && change.path.endsWith(".proto");
+                  return (
+                    <button
+                      className="git-change-row"
+                      key={`${change.status}-${change.relativePath}`}
+                      onClick={() => canOpen && void openFile(change.path)}
+                      disabled={!canOpen}
+                      title={change.relativePath}
+                    >
+                      <span className={`git-change-status status-${change.status.replace(/\W/g, "u")}`}>
+                        {gitStatusLabel(change.status)}
+                      </span>
+                      <span>{change.relativePath}</span>
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="git-clean">No local changes</div>
+              )}
+            </div>
+            <label>
+              Branch
+              <select
+                value={gitConfig.branch}
+                onChange={(event) => updateGitConfig({ ...gitConfig, branch: event.target.value })}
+              >
+                {gitInfo.availableBranches.map((branch) => <option key={branch}>{branch}</option>)}
+              </select>
+            </label>
+            <label>
+              Interval
+              <select
+                value={gitConfig.intervalMinutes}
+                onChange={(event) =>
+                  updateGitConfig({
+                    ...gitConfig,
+                    intervalMinutes: Number(event.target.value),
+                  })
+                }
+              >
+                <option value={0}>Off</option>
+                <option value={1}>Every minute</option>
+                <option value={5}>Every 5 minutes</option>
+                <option value={15}>Every 15 minutes</option>
+                <option value={30}>Every 30 minutes</option>
+                <option value={60}>Every hour</option>
+              </select>
+            </label>
+            <button
+              className="secondary-button git-pull-button"
+              onClick={() => void pullFromRemote()}
+              disabled={isPulling}
+            >
+              <RefreshCcw size={14} className={isPulling ? "spin" : ""} />
+              {isPulling ? "Pulling…" : "Pull now"}
+            </button>
+          </section>
+        )}
 
         <nav className="file-tree">
           {tree ? (
@@ -1469,6 +1695,15 @@ function escapeRegExp(value: string) {
 function fileName(path: string) {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+function gitStatusLabel(status: string) {
+  if (status === "??") return "U";
+  if (status.includes("R")) return "R";
+  if (status.includes("D")) return "D";
+  if (status.includes("A")) return "A";
+  if (status.includes("M")) return "M";
+  return status.trim() || "?";
 }
 
 function parseMetadata(value: string) {
