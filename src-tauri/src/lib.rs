@@ -9,6 +9,7 @@ use prost_types::FileDescriptorSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -124,7 +125,15 @@ struct MethodTemplateOutput {
     request_type: String,
     response_type: String,
     request_json: Value,
+    response_json: Value,
     request_fields: Vec<FieldInfo>,
+    response_fields: Vec<FieldInfo>,
+    service_options: Value,
+    method_options: Value,
+    request_options: Value,
+    response_options: Value,
+    rpc_source: String,
+    enum_source: String,
     grpc_path: String,
     client_streaming: bool,
     server_streaming: bool,
@@ -136,6 +145,11 @@ struct FieldInfo {
     name: String,
     json_name: String,
     field_type: String,
+    number: u32,
+    cardinality: String,
+    oneof: Option<String>,
+    enum_values: Vec<String>,
+    options: Value,
     repeated: bool,
     map: bool,
     required: bool,
@@ -163,7 +177,23 @@ struct GitPullOutput {
 struct GitChange {
     path: String,
     relative_path: String,
+    original_relative_path: String,
     status: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitFileDiff {
+    original: String,
+    modified: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitOutput {
+    commit: String,
+    branch: String,
+    message: String,
 }
 
 #[tauri::command]
@@ -263,17 +293,26 @@ fn get_git_changes(root: String) -> Result<Vec<GitChange>, String> {
         &repository_path,
         &["status", "--porcelain=v1", "--untracked-files=all"],
     )?;
-    Ok(output
+    Ok(parse_git_changes(&output, &repository_path))
+}
+
+fn parse_git_changes(output: &str, repository_path: &Path) -> Vec<GitChange> {
+    output
         .lines()
         .filter_map(|line| {
             if line.len() < 4 {
                 return None;
             }
             let status = line[..2].trim().to_string();
-            let display_path = line[3..]
-                .rsplit_once(" -> ")
+            let paths = line[3..].rsplit_once(" -> ");
+            let display_path = paths
                 .map(|(_, destination)| destination)
                 .unwrap_or(&line[3..])
+                .trim_matches('"')
+                .to_string();
+            let original_relative_path = paths
+                .map(|(source, _)| source)
+                .unwrap_or(&display_path)
                 .trim_matches('"')
                 .to_string();
             Some(GitChange {
@@ -282,10 +321,98 @@ fn get_git_changes(root: String) -> Result<Vec<GitChange>, String> {
                     .to_string_lossy()
                     .to_string(),
                 relative_path: display_path,
+                original_relative_path,
                 status,
             })
         })
-        .collect())
+        .collect()
+}
+
+#[tauri::command]
+fn get_git_file_diff(
+    root: String,
+    relative_path: String,
+    original_relative_path: String,
+    status: String,
+) -> Result<GitFileDiff, String> {
+    for candidate in [&relative_path, &original_relative_path] {
+        let path = Path::new(candidate);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("Invalid repository path".to_string());
+        }
+    }
+    let relative = Path::new(&relative_path);
+    let repository_root = git_output(Path::new(&root), &["rev-parse", "--show-toplevel"])?;
+    let repository_path = PathBuf::from(repository_root);
+    let head_path = format!("HEAD:{original_relative_path}");
+    let original = if status == "??" || status.contains('A') {
+        String::new()
+    } else {
+        match git_output(&repository_path, &["show", "--no-textconv", &head_path]) {
+            Ok(content) => content,
+            Err(head_error) => {
+                let index_path = format!(":{original_relative_path}");
+                git_output(&repository_path, &["show", "--no-textconv", &index_path]).map_err(
+                    |index_error| {
+                        format!(
+                            "Unable to read the Git baseline for {original_relative_path}. HEAD: {head_error}; index: {index_error}"
+                        )
+                    },
+                )?
+            }
+        }
+    };
+    let modified = if status.contains('D') {
+        String::new()
+    } else {
+        let working_path = repository_path.join(relative);
+        fs::read_to_string(&working_path).map_err(|error| {
+            format!(
+                "Unable to read working file {}: {error}",
+                working_path.display()
+            )
+        })?
+    };
+    Ok(GitFileDiff { original, modified })
+}
+
+#[tauri::command]
+fn commit_and_push_git(root: String, message: String) -> Result<GitCommitOutput, String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Commit message cannot be empty".to_string());
+    }
+    let repository_root = git_output(Path::new(&root), &["rev-parse", "--show-toplevel"])?;
+    let repository_path = PathBuf::from(repository_root);
+    let branch = git_output(&repository_path, &["branch", "--show-current"])?;
+    if branch.is_empty() {
+        return Err("Cannot commit while HEAD is detached".to_string());
+    }
+    git_output(&repository_path, &["remote", "get-url", "origin"])?;
+    git_output(&repository_path, &["add", "-A"])?;
+    if !git_command_succeeds(&repository_path, &["diff", "--cached", "--quiet"]) {
+        git_output(&repository_path, &["commit", "-m", message])?;
+    } else {
+        return Err("There are no changes to commit".to_string());
+    }
+    let commit = git_output(&repository_path, &["rev-parse", "--short", "HEAD"])?;
+    let push_output =
+        git_output(&repository_path, &["push", "origin", &branch]).map_err(|error| {
+            format!("Commit {commit} was created locally, but push failed: {error}")
+        })?;
+    Ok(GitCommitOutput {
+        commit,
+        branch,
+        message: if push_output.is_empty() {
+            "Push completed".to_string()
+        } else {
+            push_output
+        },
+    })
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
@@ -296,7 +423,11 @@ fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|error| format!("Unable to run git: {error}"))?;
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        // Leading whitespace is significant for porcelain status output and
+        // source file contents. Only remove command-ending line breaks.
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end_matches(['\r', '\n'])
+            .to_string())
     } else {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
         Err(if message.is_empty() {
@@ -360,16 +491,130 @@ fn get_method_template_inner(input: MethodTemplateInput) -> anyhow::Result<Metho
     let request_descriptor = method.input();
     let response_descriptor = method.output();
     let grpc_path = format!("/{}/{}", service.full_name(), method.name());
+    let source = fs::read_to_string(&input.file_path).unwrap_or_default();
 
     Ok(MethodTemplateOutput {
         request_type: request_descriptor.full_name().to_string(),
         response_type: response_descriptor.full_name().to_string(),
         request_json: message_template_json(&request_descriptor, 0),
+        response_json: message_template_json(&response_descriptor, 0),
         request_fields: message_fields(&request_descriptor, 0),
+        response_fields: message_fields(&response_descriptor, 0),
+        service_options: serialize_message_json(&service.options()).unwrap_or(Value::Null),
+        method_options: serialize_message_json(&method.options()).unwrap_or(Value::Null),
+        request_options: serialize_message_json(&request_descriptor.options())
+            .unwrap_or(Value::Null),
+        response_options: serialize_message_json(&response_descriptor.options())
+            .unwrap_or(Value::Null),
+        rpc_source: extract_rpc_source(&source, method.name()),
+        enum_source: collect_imported_enums(&input.include_paths, &input.file_path),
         grpc_path,
         client_streaming: method.is_client_streaming(),
         server_streaming: method.is_server_streaming(),
     })
+}
+
+fn extract_rpc_source(source: &str, method_name: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let needle = format!("rpc {method_name}");
+    let Some(start) = lines.iter().position(|line| line.contains(&needle)) else {
+        return String::new();
+    };
+    extract_block_from_lines(&lines, start)
+}
+
+fn extract_named_blocks(source: &str, keyword: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with(&format!("{keyword} ")))
+        .map(|(index, _)| extract_block_from_lines(&lines, index))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn collect_imported_enums(include_paths: &[String], current_file: &str) -> String {
+    let current_path = Path::new(current_file);
+    let fallback_root = current_path.parent().unwrap_or_else(|| Path::new("."));
+    let workspace_root = include_paths
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .min_by_key(|path| path.components().count())
+        .unwrap_or_else(|| fallback_root.to_path_buf());
+    let workspace_root = fs::canonicalize(&workspace_root).unwrap_or(workspace_root);
+    let mut queue = VecDeque::from([current_path.to_path_buf()]);
+    let mut visited = HashSet::new();
+    let mut groups = Vec::new();
+    while let Some(path) = queue.pop_front() {
+        let canonical = fs::canonicalize(&path).unwrap_or(path);
+        if !visited.insert(canonical.clone()) {
+            continue;
+        }
+        let Ok(source) = fs::read_to_string(&canonical) else {
+            continue;
+        };
+        let enums = extract_named_blocks(&source, "enum");
+        if !enums.is_empty() {
+            let display_path = canonical
+                .strip_prefix(&workspace_root)
+                .unwrap_or(&canonical);
+            groups.push(format!("// Source: {}\n{enums}", display_path.display()));
+        }
+        let source_dir = canonical.parent().unwrap_or(fallback_root);
+        for import_path in parse_proto_imports(&source) {
+            let candidates = std::iter::once(source_dir.join(&import_path)).chain(
+                include_paths
+                    .iter()
+                    .map(|include_path| Path::new(include_path).join(&import_path)),
+            );
+            if let Some(resolved) = candidates.into_iter().find(|candidate| candidate.is_file()) {
+                queue.push_back(resolved);
+            }
+        }
+    }
+    groups.join("\n\n")
+}
+
+fn parse_proto_imports(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if !line.starts_with("import ") {
+                return None;
+            }
+            let start = line.find('"')? + 1;
+            let end = line[start..].find('"')? + start;
+            Some(line[start..end].to_string())
+        })
+        .collect()
+}
+
+fn extract_block_from_lines(lines: &[&str], start: usize) -> String {
+    let mut first = start;
+    while first > 0 && lines[first - 1].trim_start().starts_with("//") {
+        first -= 1;
+    }
+    let mut depth = 0_i32;
+    let mut opened = false;
+    let mut end = start;
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        for character in line.chars() {
+            if character == '{' {
+                depth += 1;
+                opened = true;
+            } else if character == '}' {
+                depth -= 1;
+            }
+        }
+        end = index;
+        if (opened && depth <= 0) || (!opened && line.contains(';')) {
+            break;
+        }
+    }
+    lines[first..=end].join("\n")
 }
 
 async fn invoke_grpc_inner(input: GrpcRequestInput) -> anyhow::Result<GrpcResponseOutput> {
@@ -631,8 +876,21 @@ fn field_info(field: &FieldDescriptor, depth: usize) -> FieldInfo {
 
     FieldInfo {
         name: field.name().to_string(),
-        json_name: field.name().to_string(),
+        json_name: field.json_name().to_string(),
         field_type: field_type_label(field),
+        number: field.number(),
+        cardinality: format!("{:?}", field.cardinality()).to_lowercase(),
+        oneof: field
+            .containing_oneof()
+            .map(|oneof| oneof.name().to_string()),
+        enum_values: match field.kind() {
+            Kind::Enum(descriptor) => descriptor
+                .values()
+                .map(|value| format!("{} = {}", value.name(), value.number()))
+                .collect(),
+            _ => Vec::new(),
+        },
+        options: serialize_message_json(&field.options()).unwrap_or(Value::Null),
         repeated: field.is_list(),
         map: field.is_map(),
         required: matches!(field.cardinality(), prost_reflect::Cardinality::Required),
@@ -1016,13 +1274,15 @@ pub fn run() {
             get_git_workspace_info,
             pull_git_branch,
             get_git_changes,
+            get_git_file_diff,
+            commit_and_push_git,
             analyze_proto,
             get_method_template,
             invoke_grpc
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title("ProtoHub");
+                let _ = window.set_title("Protohub");
             }
             Ok(())
         })
@@ -1089,6 +1349,8 @@ message SubmitVoiceMessageRsp {
             Value::from(false)
         );
         assert_eq!(template.request_fields.len(), 3);
+        assert_eq!(template.request_fields[0].number, 1);
+        assert_eq!(template.response_fields.len(), 1);
     }
 
     #[test]
@@ -1168,5 +1430,78 @@ message CurrentRsp {}
 
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "CurrentService");
+    }
+
+    #[test]
+    fn git_status_parser_preserves_first_path_character() {
+        let changes = parse_git_changes(
+            " M vemus/asset/activity/voice_msg_service.proto\n?? new.proto",
+            Path::new("/repo"),
+        );
+
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].status, "M");
+        assert_eq!(
+            changes[0].relative_path,
+            "vemus/asset/activity/voice_msg_service.proto"
+        );
+        assert_eq!(changes[1].status, "??");
+        assert_eq!(changes[1].relative_path, "new.proto");
+    }
+
+    #[test]
+    fn protocol_source_extraction_keeps_rpc_options_and_enums() {
+        let source = r#"
+enum TaskStatus {
+  PROCESSING = 0;
+  SUCCESS = 1;
+}
+service Demo {
+  rpc Get (Req) returns (Rsp) {
+    option (trpc.api.http) = {
+      post: "/demo"
+      body: "*"
+    };
+  }
+}
+"#;
+        let rpc = extract_rpc_source(source, "Get");
+        assert!(rpc.contains("option (trpc.api.http)"));
+        assert!(rpc.contains("post: \"/demo\""));
+        let enums = extract_named_blocks(source, "enum");
+        assert!(enums.contains("enum TaskStatus"));
+        assert!(enums.contains("SUCCESS = 1"));
+    }
+
+    #[test]
+    fn imported_enum_collection_follows_only_dependency_graph() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("common");
+        fs::create_dir(&nested).expect("mkdir");
+        fs::write(
+            dir.path().join("root.proto"),
+            "import \"common/shared.proto\";\nenum RootState { ROOT = 0; }",
+        )
+        .expect("root enum");
+        fs::write(
+            nested.join("shared.proto"),
+            "enum SharedState { SHARED = 0; }",
+        )
+        .expect("shared enum");
+        fs::write(
+            dir.path().join("unrelated.proto"),
+            "enum UnrelatedState { UNRELATED = 0; }",
+        )
+        .expect("unrelated enum");
+
+        let output = collect_imported_enums(
+            &[dir.path().to_string_lossy().to_string()],
+            &dir.path().join("root.proto").to_string_lossy(),
+        );
+        assert!(output.contains("// Source: root.proto"));
+        assert!(output.contains("enum RootState"));
+        assert!(output.contains("// Source: common/shared.proto"));
+        assert!(output.contains("enum SharedState"));
+        assert!(!output.contains("UnrelatedState"));
     }
 }

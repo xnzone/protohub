@@ -1,4 +1,4 @@
-import Editor, { type BeforeMount, type OnMount } from "@monaco-editor/react";
+import Editor, { DiffEditor, type BeforeMount, type OnMount } from "@monaco-editor/react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -11,6 +11,7 @@ import {
   FileCode2,
   FolderOpen,
   GitBranch,
+  GitCommit,
   Hash,
   List,
   MessageSquare,
@@ -70,6 +71,11 @@ type FieldInfo = {
   name: string;
   jsonName: string;
   fieldType: string;
+  number: number;
+  cardinality: string;
+  oneof?: string;
+  enumValues: string[];
+  options: unknown;
   repeated: boolean;
   map: boolean;
   required: boolean;
@@ -80,7 +86,15 @@ type MethodTemplate = {
   requestType: string;
   responseType: string;
   requestJson: unknown;
+  responseJson: unknown;
   requestFields: FieldInfo[];
+  responseFields: FieldInfo[];
+  serviceOptions: unknown;
+  methodOptions: unknown;
+  requestOptions: unknown;
+  responseOptions: unknown;
+  rpcSource: string;
+  enumSource: string;
   grpcPath: string;
   clientStreaming: boolean;
   serverStreaming: boolean;
@@ -107,7 +121,14 @@ type GitPullConfig = {
 type GitChange = {
   path: string;
   relativePath: string;
+  originalRelativePath: string;
   status: string;
+};
+
+type GitDiffView = {
+  path: string;
+  original: string;
+  modified: string;
 };
 
 const GIT_PULL_STORAGE_KEY = "protohub.gitPullConfigs";
@@ -178,7 +199,7 @@ function loadEnvVars(): EnvVariable[] {
     const parsed = JSON.parse(raw) as EnvVariable[];
     if (!Array.isArray(parsed)) return [];
 
-    // Remove the project-specific defaults previously shipped with ProtoHub,
+    // Remove the project-specific defaults previously shipped with Protohub,
     // while preserving any entries whose key or value the user customized.
     return parsed.filter(
       (item) =>
@@ -240,9 +261,14 @@ export default function App() {
   const [envVars, setEnvVars] = useState<EnvVariable[]>(loadEnvVars);
   const [envPanelOpen, setEnvPanelOpen] = useState(false);
   const [metadata, setMetadata] = useState("authorization: Bearer token");
-  const [requestJson, setRequestJson] = useState("{\n  \"name\": \"ProtoHub\"\n}");
+  const [requestJson, setRequestJson] = useState("{\n  \"name\": \"Protohub\"\n}");
+  const [requestExampleJson, setRequestExampleJson] = useState("{}");
+  const [responseExampleJson, setResponseExampleJson] = useState("{}");
+  const [rpcSource, setRpcSource] = useState("");
+  const [enumSource, setEnumSource] = useState("");
   const [responseJson, setResponseJson] = useState("");
   const [requestFields, setRequestFields] = useState<FieldInfo[]>([]);
+  const [responseFields, setResponseFields] = useState<FieldInfo[]>([]);
   const [grpcPath, setGrpcPath] = useState("");
   const [fullMethod, setFullMethod] = useState("");
   const [authority, setAuthority] = useState("");
@@ -254,6 +280,9 @@ export default function App() {
   const [gitPanelOpen, setGitPanelOpen] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
   const [gitChanges, setGitChanges] = useState<GitChange[]>([]);
+  const [gitDiff, setGitDiff] = useState<GitDiffView | null>(null);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [isCommitting, setIsCommitting] = useState(false);
   const isPullingRef = useRef(false);
   const [activeLine, setActiveLine] = useState<number | null>(null);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -401,6 +430,43 @@ export default function App() {
     }
   }
 
+  async function showGitDiff(change: GitChange) {
+    if (!gitInfo) return;
+    setStatus(`Loading diff · ${change.relativePath}`);
+    try {
+      const diff = await invoke<{ original: string; modified: string }>("get_git_file_diff", {
+        root: gitInfo.repositoryRoot,
+        relativePath: change.relativePath,
+        originalRelativePath: change.originalRelativePath,
+        status: change.status,
+      });
+      setGitDiff({ path: change.relativePath, ...diff });
+      setStatus(`Showing changes · ${change.relativePath}`);
+    } catch (error) {
+      setStatus(`Unable to load diff: ${String(error)}`);
+    }
+  }
+
+  async function commitAndPush() {
+    if (!gitInfo || isCommitting || !commitMessage.trim()) return;
+    setIsCommitting(true);
+    setStatus("Committing changes");
+    try {
+      const result = await invoke<{ commit: string; branch: string; message: string }>(
+        "commit_and_push_git",
+        { root: gitInfo.repositoryRoot, message: commitMessage.trim() },
+      );
+      setCommitMessage("");
+      await loadGitChanges(gitInfo.repositoryRoot);
+      setStatus(`Pushed ${result.commit} to origin/${result.branch}`);
+    } catch (error) {
+      await loadGitChanges(gitInfo.repositoryRoot);
+      setStatus(`Commit failed: ${String(error)}`);
+    } finally {
+      setIsCommitting(false);
+    }
+  }
+
   function updateGitConfig(next: GitPullConfig) {
     setGitConfig(next);
     if (gitInfo) saveGitPullConfig(gitInfo.repositoryRoot, next);
@@ -535,10 +601,16 @@ export default function App() {
       setGrpcPath(template.grpcPath);
       setFullMethod(template.grpcPath);
       setRequestFields(template.requestFields);
+      setResponseFields(template.responseFields);
       setRequestJson(JSON.stringify(template.requestJson, null, 2));
+      setRequestExampleJson(JSON.stringify(template.requestJson, null, 2));
+      setResponseExampleJson(JSON.stringify(template.responseJson, null, 2));
+      setRpcSource(template.rpcSource);
+      setEnumSource(template.enumSource);
       setStatus(`Template loaded · ${template.grpcPath}`);
     } catch (error) {
       setRequestFields([]);
+      setResponseFields([]);
       setGrpcPath("");
       setStatus(`Template unavailable: ${String(error)}`);
     }
@@ -702,7 +774,7 @@ export default function App() {
             <Braces size={19} />
           </div>
           <div>
-            <div className="brand-name">ProtoHub</div>
+            <div className="brand-name">Protohub</div>
             <div className="brand-subtitle">protobuf lab</div>
           </div>
         </div>
@@ -754,13 +826,11 @@ export default function App() {
             <div className="git-changes">
               {gitChanges.length ? (
                 gitChanges.map((change) => {
-                  const canOpen = !change.status.includes("D") && change.path.endsWith(".proto");
                   return (
                     <button
                       className="git-change-row"
                       key={`${change.status}-${change.relativePath}`}
-                      onClick={() => canOpen && void openFile(change.path)}
-                      disabled={!canOpen}
+                      onClick={() => void showGitDiff(change)}
                       title={change.relativePath}
                     >
                       <span className={`git-change-status status-${change.status.replace(/\W/g, "u")}`}>
@@ -776,31 +846,33 @@ export default function App() {
             </div>
             <label>
               Branch
-              <select
+              <FancySelect
                 value={gitConfig.branch}
-                onChange={(event) => updateGitConfig({ ...gitConfig, branch: event.target.value })}
-              >
-                {gitInfo.availableBranches.map((branch) => <option key={branch}>{branch}</option>)}
-              </select>
+                options={gitInfo.availableBranches.map((branch) => ({ value: branch, label: branch }))}
+                onChange={(branch) => updateGitConfig({ ...gitConfig, branch })}
+                placeholder="Select branch"
+              />
             </label>
             <label>
               Interval
-              <select
-                value={gitConfig.intervalMinutes}
-                onChange={(event) =>
+              <FancySelect
+                value={String(gitConfig.intervalMinutes)}
+                options={[
+                  { value: "0", label: "Off" },
+                  { value: "1", label: "Every minute" },
+                  { value: "5", label: "Every 5 minutes" },
+                  { value: "15", label: "Every 15 minutes" },
+                  { value: "30", label: "Every 30 minutes" },
+                  { value: "60", label: "Every hour" },
+                ]}
+                onChange={(value) =>
                   updateGitConfig({
                     ...gitConfig,
-                    intervalMinutes: Number(event.target.value),
+                    intervalMinutes: Number(value),
                   })
                 }
-              >
-                <option value={0}>Off</option>
-                <option value={1}>Every minute</option>
-                <option value={5}>Every 5 minutes</option>
-                <option value={15}>Every 15 minutes</option>
-                <option value={30}>Every 30 minutes</option>
-                <option value={60}>Every hour</option>
-              </select>
+                placeholder="Select interval"
+              />
             </label>
             <button
               className="secondary-button git-pull-button"
@@ -810,6 +882,28 @@ export default function App() {
               <RefreshCcw size={14} className={isPulling ? "spin" : ""} />
               {isPulling ? "Pulling…" : "Pull now"}
             </button>
+            <div className="git-commit-form">
+              <input
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    void commitAndPush();
+                  }
+                }}
+                placeholder="Commit message"
+                disabled={isCommitting}
+              />
+              <button
+                className="git-commit-button"
+                onClick={() => void commitAndPush()}
+                disabled={!gitChanges.length || !commitMessage.trim() || isCommitting}
+                title="Stage all changes, commit, and push the current branch"
+              >
+                <GitCommit size={14} />
+                {isCommitting ? "Committing…" : "Commit & Push"}
+              </button>
+            </div>
           </section>
         )}
 
@@ -882,6 +976,11 @@ export default function App() {
             setSelectedMethod={setSelectedMethod}
             selectedMethodData={selectedMethodData}
             requestFields={requestFields}
+            responseFields={responseFields}
+            requestExampleJson={requestExampleJson}
+            responseExampleJson={responseExampleJson}
+            rpcSource={rpcSource}
+            enumSource={enumSource}
             grpcPath={grpcPath}
             fullMethod={fullMethod}
             setFullMethod={setFullMethod}
@@ -903,6 +1002,42 @@ export default function App() {
           <span>{analysis.packageName || "no package"}</span>
         </footer>
       </section>
+      {gitDiff && (
+        <div className="git-diff-backdrop" onMouseDown={() => setGitDiff(null)}>
+          <section className="git-diff-dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="git-diff-header">
+              <div>
+                <GitBranch size={15} />
+                <strong>Changes</strong>
+                <span>{gitDiff.path}</span>
+              </div>
+              <button onClick={() => setGitDiff(null)} title="Close diff">
+                <X size={17} />
+              </button>
+            </header>
+            <div className="git-diff-editor">
+              <DiffEditor
+                original={gitDiff.original}
+                modified={gitDiff.modified}
+                originalModelPath={`git-head://${gitDiff.path}`}
+                modifiedModelPath={gitDiff.path}
+                language={gitDiff.path.endsWith(".proto") ? "protobuf" : undefined}
+                theme="protohub-light"
+                beforeMount={configureProtoEditor}
+                options={{
+                  readOnly: true,
+                  renderSideBySide: true,
+                  automaticLayout: true,
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineHeight: 21,
+                  scrollBeyondLastLine: false,
+                }}
+              />
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -1058,6 +1193,11 @@ function TesterView(props: {
   setSelectedMethod: (value: string) => void;
   selectedMethodData?: ProtoMethod;
   requestFields: FieldInfo[];
+  responseFields: FieldInfo[];
+  requestExampleJson: string;
+  responseExampleJson: string;
+  rpcSource: string;
+  enumSource: string;
   grpcPath: string;
   fullMethod: string;
   setFullMethod: (value: string) => void;
@@ -1072,6 +1212,7 @@ function TesterView(props: {
   sendGrpcRequest: () => void;
   isBusy: boolean;
 }) {
+  const [testerMode, setTesterMode] = useState<"call" | "protocol">("call");
   const service = props.analysis.services.find(
     (item) => item.fullName === props.selectedService,
   );
@@ -1158,6 +1299,17 @@ function TesterView(props: {
           </button>
         </div>
 
+        <div className="tester-mode-tabs">
+          <button className={testerMode === "call" ? "active" : ""} onClick={() => setTesterMode("call")}>
+            <Play size={14} /> Call
+          </button>
+          <button className={testerMode === "protocol" ? "active" : ""} onClick={() => setTesterMode("protocol")}>
+            <Braces size={14} /> Protocol
+          </button>
+        </div>
+
+        {testerMode === "call" ? (
+          <>
         <section className="advanced-panel">
           <button
             className="advanced-trigger"
@@ -1233,9 +1385,133 @@ function TesterView(props: {
           <JsonEditor title="Request" value={props.requestJson} onChange={props.setRequestJson} />
           <JsonEditor title="Response" value={props.responseJson} readOnly />
         </section>
+          </>
+        ) : (
+          <ProtocolView
+            grpcPath={props.grpcPath}
+            method={props.selectedMethodData}
+            requestFields={props.requestFields}
+            responseFields={props.responseFields}
+            requestExampleJson={props.requestExampleJson}
+            responseExampleJson={props.responseExampleJson}
+            rpcSource={props.rpcSource}
+            enumSource={props.enumSource}
+          />
+        )}
       </section>
     </div>
   );
+}
+
+function ProtocolView({
+  grpcPath,
+  method,
+  requestFields,
+  responseFields,
+  requestExampleJson,
+  responseExampleJson,
+  rpcSource,
+  enumSource,
+}: {
+  grpcPath: string;
+  method?: ProtoMethod;
+  requestFields: FieldInfo[];
+  responseFields: FieldInfo[];
+  requestExampleJson: string;
+  responseExampleJson: string;
+  rpcSource: string;
+  enumSource: string;
+}) {
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => new Set());
+  if (!method) return <div className="protocol-empty">Select a method to preview its protocol.</div>;
+  const requestProto = renderProtoDefinitions(method.requestType, requestFields);
+  const responseProto = renderProtoDefinitions(method.responseType, responseFields);
+  const toggleSection = (key: string) => setCollapsedSections((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const allSections = ["rpc", "request-proto", "request-json", "response-proto", "response-json", "enums"];
+  return (
+    <section className="protocol-view">
+      <header className="protocol-method-card">
+        <div>
+          <small>METHOD</small>
+          <strong>{grpcPath}</strong>
+        </div>
+        <div className="protocol-method-actions">
+          <button onClick={() => setCollapsedSections(new Set())}>Expand all</button>
+          <button onClick={() => setCollapsedSections(new Set(allSections))}>Collapse all</button>
+          <span>{method.clientStreaming || method.serverStreaming ? "streaming" : "unary"}</span>
+        </div>
+      </header>
+      <div className="protocol-top-grid">
+        {rpcSource && <CollapsibleSource title="Original definition" eyebrow="RPC & OPTIONS" collapsed={collapsedSections.has("rpc")} onToggle={() => toggleSection("rpc")} value={rpcSource} />}
+        {enumSource && <ProtocolCodePane title="Imported enums" value={enumSource} collapsed={collapsedSections.has("enums")} onToggle={() => toggleSection("enums")} maxHeight={380} />}
+      </div>
+      <div className="protocol-paired-grid">
+        <ProtocolCodePane title="Request messages" value={requestProto} collapsed={collapsedSections.has("request-proto")} onToggle={() => toggleSection("request-proto")} />
+        <ProtocolJsonExample title="Request JSON" value={requestExampleJson} collapsed={collapsedSections.has("request-json")} onToggle={() => toggleSection("request-json")} />
+        <ProtocolCodePane title="Response messages" value={responseProto} collapsed={collapsedSections.has("response-proto")} onToggle={() => toggleSection("response-proto")} />
+        <ProtocolJsonExample title="Response JSON" value={responseExampleJson} collapsed={collapsedSections.has("response-json")} onToggle={() => toggleSection("response-json")} />
+      </div>
+    </section>
+  );
+}
+
+function ProtocolCodePane({ title, value, collapsed, onToggle, maxHeight = 620 }: { title: string; value: string; collapsed: boolean; onToggle: () => void; maxHeight?: number }) {
+  return <section className={`protocol-code-pane ${collapsed ? "collapsed" : ""}`} style={{ height: collapsed ? 48 : protocolPaneHeight(value, maxHeight) }}><ProtocolPaneHeader eyebrow="PROTO DEFINITION" title={title} collapsed={collapsed} onToggle={onToggle} />{!collapsed && <Editor height="100%" language="protobuf" theme="protohub-light" value={value} beforeMount={configureProtoEditor} options={{ readOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 21, wordWrap: "on", scrollBeyondLastLine: false }} />}</section>;
+}
+
+function ProtocolJsonExample({ title, value, collapsed, onToggle }: { title: string; value: string; collapsed: boolean; onToggle: () => void }) {
+  return (
+    <section className={`protocol-code-pane protocol-json-pane ${collapsed ? "collapsed" : ""}`} style={{ height: collapsed ? 48 : protocolPaneHeight(value, 620) }}>
+      <ProtocolPaneHeader eyebrow="EXAMPLE" title={title} collapsed={collapsed} onToggle={onToggle} />
+      {!collapsed && <Editor height="100%" language="json" theme="protohub-light" value={value} options={{ readOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 12, lineHeight: 20, scrollBeyondLastLine: false }} />}
+    </section>
+  );
+}
+
+function protocolPaneHeight(value: string, maxHeight: number) {
+  const contentHeight = 58 + Math.max(1, value.split(/\r?\n/).length) * 21;
+  return Math.min(maxHeight, Math.max(150, contentHeight));
+}
+
+function ProtocolPaneHeader({ eyebrow, title, collapsed, onToggle }: { eyebrow: string; title: string; collapsed: boolean; onToggle: () => void }) {
+  return <header className="protocol-pane-header" onClick={onToggle}><div><small>{eyebrow}</small><strong>{title}</strong></div><button title={collapsed ? "展开" : "收起"}><span>{collapsed ? "展开" : "收起"}</span>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}</button></header>;
+}
+
+function CollapsibleSource({ title, eyebrow, value, collapsed, onToggle }: { title: string; eyebrow: string; value: string; collapsed: boolean; onToggle: () => void }) {
+  return <section className={`protocol-code-pane protocol-rpc-source ${collapsed ? "collapsed" : ""}`}><ProtocolPaneHeader eyebrow={eyebrow} title={title} collapsed={collapsed} onToggle={onToggle} />{!collapsed && <Editor height="100%" language="protobuf" theme="protohub-light" value={value} beforeMount={configureProtoEditor} options={{ readOnly: true, minimap: { enabled: false }, automaticLayout: true, fontSize: 13, lineHeight: 21, wordWrap: "on", scrollBeyondLastLine: false }} />}</section>;
+}
+
+function renderProtoDefinitions(rootType: string, fields: FieldInfo[]) {
+  const definitions: string[] = [];
+  const visited = new Set<string>();
+  function visit(typeName: string, nextFields: FieldInfo[]) {
+    if (visited.has(typeName)) return;
+    visited.add(typeName);
+    const shortName = typeName.split(".").pop() || typeName;
+    const lines = nextFields.map((field) => {
+      const prefix = field.map ? "" : field.cardinality === "repeated" ? "repeated " : field.cardinality === "required" ? "required " : "";
+      const type = field.map ? field.fieldType : field.fieldType.replace(/^enum /, "");
+      const suffix = field.oneof ? ` // oneof ${field.oneof}` : field.jsonName !== field.name ? ` // json: ${field.jsonName}` : "";
+      return `  ${prefix}${type} ${field.name} = ${field.number};${suffix}`;
+    });
+    definitions.push(`message ${shortName} {\n${lines.join("\n")}\n}`);
+    for (const field of nextFields) {
+      if (field.enumValues.length) {
+        const enumName = field.fieldType.replace(/^enum /, "");
+        if (!visited.has(enumName)) {
+          visited.add(enumName);
+          definitions.push(`enum ${enumName.split(".").pop()} {\n${field.enumValues.map((value) => `  ${value};`).join("\n")}\n}`);
+        }
+      }
+      if (field.children.length && !field.map) visit(field.fieldType, field.children);
+    }
+  }
+  visit(rootType, fields);
+  return definitions.join("\n\n");
 }
 
 function EnvVarsBody({

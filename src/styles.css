@@ -218,6 +218,73 @@ button {
   text-align: center;
 }
 
+.git-diff-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  padding: 42px;
+  place-items: center;
+  background: rgba(21, 31, 40, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.git-diff-dialog {
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+  width: min(1180px, 94vw);
+  height: min(760px, 88vh);
+  overflow: hidden;
+  border: 1px solid #c9d5df;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 20px 55px rgba(28, 39, 49, 0.25);
+}
+
+.git-diff-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid #dce5ec;
+}
+
+.git-diff-header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.git-diff-header span {
+  overflow: hidden;
+  color: #657282;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-diff-header button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border-radius: 6px;
+  color: #657282;
+  background: transparent;
+  cursor: pointer;
+}
+
+.git-diff-header button:hover {
+  background: #edf3f8;
+}
+
+.git-diff-editor {
+  min-width: 0;
+  min-height: 0;
+}
+
 .git-settings label {
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr);
@@ -236,9 +303,72 @@ button {
   background: #f8fbfd;
 }
 
+.git-settings .select-trigger {
+  height: 32px;
+  padding: 0 9px;
+  border-color: #cbd8e3;
+  border-radius: 6px;
+  color: #2d3b48;
+  background: #f8fbfd;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.git-settings .select-trigger:hover {
+  border-color: #8fb8ad;
+  background: #f1f7f5;
+}
+
+.git-settings .select-menu {
+  font-size: 12px;
+}
+
 .git-pull-button {
   width: 100%;
   height: 32px;
+}
+
+.git-commit-form {
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid #e0e8ef;
+}
+
+.git-commit-form input {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid #cbd8e3;
+  border-radius: 6px;
+  outline: none;
+  color: #2d3b48;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.git-commit-form input:focus {
+  border-color: #69b7a5;
+  box-shadow: 0 0 0 2px rgba(22, 135, 111, 0.1);
+}
+
+.git-commit-button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #16876f;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.git-commit-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .spin {
@@ -746,6 +876,406 @@ button {
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.tester-mode-tabs {
+  display: inline-flex;
+  width: max-content;
+  padding: 3px;
+  border: 1px solid #d4dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.tester-mode-tabs button {
+  display: inline-flex;
+  height: 30px;
+  padding: 0 13px;
+  align-items: center;
+  gap: 6px;
+  border-radius: 6px;
+  color: #657282;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.tester-mode-tabs button.active {
+  color: #116c5b;
+  background: #dff3ed;
+}
+
+.protocol-view {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding-bottom: 4px;
+}
+
+.protocol-method-card,
+.protocol-schema-card,
+.protocol-options {
+  border: 1px solid #d4dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.protocol-method-card {
+  display: flex;
+  min-height: 58px;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+}
+
+.protocol-method-card > div,
+.protocol-schema-card header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.protocol-method-card small,
+.protocol-schema-card header small {
+  color: #7b8997;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+
+.protocol-method-card > span,
+.protocol-schema-card header > span,
+.protocol-cardinality,
+.protocol-oneof {
+  padding: 3px 7px;
+  border-radius: 10px;
+  color: #116c5b;
+  background: #e1f3ee;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.protocol-method-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.protocol-method-actions button {
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: #536273;
+  background: #edf3f8;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.protocol-method-actions > span {
+  padding: 3px 7px;
+  border-radius: 10px;
+  color: #116c5b;
+  background: #e1f3ee;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.protocol-schema-grid {
+  display: grid;
+  min-height: 360px;
+  flex: 1 1 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.protocol-schema-card {
+  min-width: 0;
+  overflow: auto;
+}
+
+.protocol-schema-card > header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #e0e8ef;
+  background: #ffffff;
+}
+
+.protocol-schema-card header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-field-tree { padding: 7px; }
+.protocol-field > button {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border-radius: 5px;
+  color: #334250;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.protocol-field > button:hover { background: #f0f6f8; }
+.protocol-field-toggle { display: grid; width: 14px; flex: none; place-items: center; color: #7b8997; }
+.protocol-field > button strong { font-size: 12px; }
+.protocol-field > button small { color: #8995a2; font-size: 10px; }
+.protocol-field > button code { margin-left: auto; color: #6d42c7; font-size: 10px; }
+.protocol-number { color: #3272b8; font-size: 10px; }
+.protocol-oneof { color: #8a5818; background: #fff1d8; }
+.protocol-field-details { border-left: 1px solid #dbe5ec; }
+.protocol-field-details pre,
+.protocol-options pre {
+  margin: 5px 8px 8px;
+  padding: 8px;
+  overflow: auto;
+  border-radius: 5px;
+  color: #465565;
+  background: #f4f7fa;
+  font-size: 10px;
+}
+.protocol-enum-values { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 8px; }
+.protocol-enum-values code { padding: 3px 6px; border-radius: 4px; color: #6d42c7; background: #f0eaff; font-size: 10px; }
+.protocol-options { flex: none; }
+.protocol-options summary { padding: 8px 11px; color: #526170; cursor: pointer; font-size: 11px; font-weight: 700; }
+.protocol-options.compact { margin: 7px; background: #f8fafc; }
+.protocol-empty { display: grid; flex: 1; place-items: center; color: #7b8997; }
+
+.protocol-document-grid {
+  display: grid;
+  min-height: 480px;
+  flex: 1 1 0;
+  grid-template-columns: minmax(0, 1.25fr) minmax(340px, .75fr);
+  gap: 12px;
+}
+
+.protocol-proto-column {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-auto-rows: minmax(240px, 1fr);
+  gap: 12px;
+}
+
+.protocol-rpc-source {
+  flex: none;
+  overflow: hidden;
+  border: 1px solid #d4dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.protocol-rpc-source header {
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #e0e8ef;
+}
+
+.protocol-rpc-source header small {
+  color: #84919e;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+
+.protocol-rpc-source header strong {
+  color: #344250;
+  font-size: 12px;
+}
+
+.protocol-rpc-source pre {
+  height: calc(100% - 48px);
+  margin: 0;
+  padding: 11px 14px;
+  overflow: auto;
+  color: #344250;
+  background: #f8fafc;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.protocol-top-grid {
+  display: grid;
+  min-width: 0;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.protocol-top-grid > .protocol-rpc-source,
+.protocol-top-grid > .protocol-code-pane {
+  height: clamp(280px, 32vh, 380px) !important;
+}
+
+.protocol-top-grid > .collapsed {
+  height: 48px !important;
+}
+
+.protocol-paired-grid {
+  display: grid;
+  min-width: 0;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.protocol-paired-grid > .protocol-code-pane {
+  height: clamp(380px, calc(100vh - 360px), 720px);
+}
+
+.protocol-paired-grid > .protocol-code-pane.collapsed {
+  height: 48px;
+}
+
+.protocol-enum-row {
+  grid-column: 1 / -1;
+}
+
+.protocol-enum-row .protocol-code-pane {
+  height: clamp(320px, calc(100vh - 400px), 640px);
+}
+
+.protocol-enum-row .protocol-code-pane.collapsed {
+  height: 48px;
+}
+
+.protocol-code-pane.collapsed,
+.protocol-rpc-source.collapsed {
+  min-height: 48px;
+}
+
+.protocol-pane-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.protocol-pane-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.protocol-rpc-source .protocol-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.protocol-pane-header button {
+  display: inline-flex;
+  width: auto;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: #657282;
+  background: transparent;
+  cursor: pointer;
+}
+
+.protocol-pane-header button span {
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.protocol-pane-header:hover,
+.protocol-pane-header:hover button {
+  background: #f1f6f9;
+}
+
+.protocol-code-pane {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: 48px minmax(0, 1fr);
+  border: 1px solid #d4dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.protocol-code-pane > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px 7px 12px;
+  border-bottom: 1px solid #e0e8ef;
+}
+
+.protocol-code-pane > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.protocol-code-pane header small {
+  color: #84919e;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+
+.protocol-code-pane header strong {
+  overflow: hidden;
+  color: #344250;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-json-column {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(190px, .75fr) minmax(260px, 1.25fr);
+  gap: 12px;
+}
+
+.protocol-copy {
+  display: inline-flex;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: #ffffff;
+  background: #16876f;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+@media (max-width: 1150px) {
+  .protocol-document-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .protocol-json-column {
+    min-height: 520px;
+  }
+
+  .protocol-top-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .form-strip {
