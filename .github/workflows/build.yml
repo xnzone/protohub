@@ -21,6 +21,7 @@ jobs:
             os: windows-latest
             args: ""
             rust_targets: ""
+            asset_label: Windows-x64
             artifact-name: ProtoHub-windows
             artifact-path: |
               src-tauri/target/release/bundle/msi/*.msi
@@ -29,16 +30,18 @@ jobs:
             os: ubuntu-22.04
             args: ""
             rust_targets: ""
+            asset_label: Linux-x64
             artifact-name: ProtoHub-linux
             artifact-path: |
               src-tauri/target/release/bundle/appimage/*.AppImage
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/rpm/*.rpm
-          - platform: macos-arm64
+          - platform: macos-silicon
             os: macos-latest
             args: --target aarch64-apple-darwin
             rust_targets: aarch64-apple-darwin
-            artifact-name: ProtoHub-macos-arm64
+            asset_label: Apple-Silicon
+            artifact-name: ProtoHub-macos-Apple-Silicon
             artifact-path: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
               src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
@@ -46,6 +49,7 @@ jobs:
             os: macos-latest
             args: --target x86_64-apple-darwin
             rust_targets: x86_64-apple-darwin
+            asset_label: Intel-x64
             artifact-name: ProtoHub-macos-x64
             artifact-path: |
               src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
@@ -100,7 +104,7 @@ jobs:
           prerelease: false
           generateReleaseNotes: true
           args: ${{ matrix.args }}
-          releaseAssetNamePattern: "[name]_[version]_[platform]_[arch][setup][ext]"
+          releaseAssetNamePattern: "[name]_[version]_${{ matrix.asset_label }}[setup][ext]"
 
       - name: Build app
         if: github.event_name == 'workflow_dispatch'
