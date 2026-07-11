@@ -103,7 +103,7 @@ type EnvVariable = {
   value: string;
 };
 
-const DEFAULT_ENV_VARS: EnvVariable[] = [
+const LEGACY_DEFAULT_ENV_VARS: EnvVariable[] = [
   { key: "LOCAL_HOST", value: "127.0.0.1:8000" },
   { key: "WEIYIN_LOCAL", value: "127.0.0.1:8001" },
   { key: "TEST_HOST", value: "10.17.8.17:65501" },
@@ -117,11 +117,20 @@ const ENV_VARS_STORAGE_KEY = "protohub.envVars";
 function loadEnvVars(): EnvVariable[] {
   try {
     const raw = localStorage.getItem(ENV_VARS_STORAGE_KEY);
-    if (!raw) return DEFAULT_ENV_VARS;
+    if (!raw) return [];
     const parsed = JSON.parse(raw) as EnvVariable[];
-    return Array.isArray(parsed) ? parsed : DEFAULT_ENV_VARS;
+    if (!Array.isArray(parsed)) return [];
+
+    // Remove the project-specific defaults previously shipped with ProtoHub,
+    // while preserving any entries whose key or value the user customized.
+    return parsed.filter(
+      (item) =>
+        !LEGACY_DEFAULT_ENV_VARS.some(
+          (legacy) => legacy.key === item.key && legacy.value === item.value,
+        ),
+    );
   } catch {
-    return DEFAULT_ENV_VARS;
+    return [];
   }
 }
 
@@ -169,7 +178,7 @@ export default function App() {
   const [analysis, setAnalysis] = useState<ProtoAnalysis>(emptyAnalysis);
   const [selectedService, setSelectedService] = useState("");
   const [selectedMethod, setSelectedMethod] = useState("");
-  const [endpoint, setEndpoint] = useState("{{LOCAL_HOST}}");
+  const [endpoint, setEndpoint] = useState("127.0.0.1:8000");
   const [useTls, setUseTls] = useState(false);
   const [envVars, setEnvVars] = useState<EnvVariable[]>(loadEnvVars);
   const [envPanelOpen, setEnvPanelOpen] = useState(false);
